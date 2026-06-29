@@ -499,8 +499,8 @@ tbody tr:last-child td{border-bottom:none}
 // ════════════════════════════════════════════════════════════
 //   ⚙️  CONFIGURATION — MODIFIEZ CES 2 LIGNES UNIQUEMENT
 // ════════════════════════════════════════════════════════════
-const SUPABASE_URL      = 'https://vtskrrdranumjgrdnall.supabase.co';   // ← remplacer
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0c2tycmRyYW51bWpncmRuYWxsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1OTY3NjMsImV4cCI6MjA5ODE3Mjc2M30.KNRhks9A-LfQBUPcdewn77cSgEMZcDhw_l6PQyFBMaQ';            // ← remplacer
+const SUPABASE_URL      = 'https://VOTRE_PROJET.supabase.co';   // ← remplacer
+const SUPABASE_ANON_KEY = 'VOTRE_CLE_ANON_PUBLIQUE';            // ← remplacer
 // ════════════════════════════════════════════════════════════
 
 // ── Supabase REST helper ────────────────────────────────────
@@ -604,8 +604,9 @@ function esc(s) {
 //   LOGIN
 // ════════════════════════════════════════════════════════════
 async function doLogin() {
-  const username = document.getElementById('login-user').value.trim().toLowerCase();
-  const password = document.getElementById('login-pass').value;
+  // NE PAS modifier la casse — Supabase est sensible à la casse
+  const username = document.getElementById('login-user').value.trim();
+  const password = document.getElementById('login-pass').value.trim();
   const errEl    = document.getElementById('login-error');
   const btn      = document.getElementById('login-btn');
 
@@ -618,22 +619,33 @@ async function doLogin() {
   btn.innerHTML = '<span class="spinner-sm" style="border-top-color:#fff"></span> Vérification…';
 
   try {
-    // Chercher le compte parent avec username + password_plain en une seule requête
-    // La colonne password_plain stocke le mot de passe en clair dans Supabase
-    // (acceptable car c'est une lecture seule côté parent, pas d'accès admin)
+    // Étape 1 : chercher le compte par username uniquement (insensible à la casse)
+    // On utilise ilike pour matcher jean, JEAN, Jean etc.
     const users = await sbGetRetry('users_parents',
-      `username=eq.${encodeURIComponent(username)}&role=eq.parent&password_plain=eq.${encodeURIComponent(password)}&select=username,nom,prenom,phone,email,role`
+      `username=ilike.${encodeURIComponent(username)}&role=eq.parent&select=username,nom,prenom,phone,email,role,password_plain`
     );
 
     if (!users || !users.length) {
-      // Petit délai anti-brute-force
-      await new Promise(r => setTimeout(r, 800));
-      throw new Error('Identifiant ou mot de passe incorrect.');
+      await new Promise(r => setTimeout(r, 600)); // anti-brute-force
+      throw new Error('Identifiant inconnu. Vérifiez votre identifiant.');
     }
 
     const user = users[0];
-    saveSession(user);
-    await initApp(user);
+
+    // Étape 2 : vérifier le mot de passe côté JS (insensible aux espaces)
+    const storedPwd = (user.password_plain || '').trim();
+    if (!storedPwd) {
+      throw new Error('Compte non configuré. Contactez l\'administration.');
+    }
+    if (storedPwd !== password) {
+      await new Promise(r => setTimeout(r, 600)); // anti-brute-force
+      throw new Error('Mot de passe incorrect.');
+    }
+
+    // Étape 3 : connexion réussie — ne pas stocker password_plain en session
+    const { password_plain: _pwd, ...safeUser } = user;
+    saveSession(safeUser);
+    await initApp(safeUser);
 
   } catch (e) {
     showLoginError(e.message || 'Erreur de connexion. Réessayez.');
