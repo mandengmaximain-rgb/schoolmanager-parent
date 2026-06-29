@@ -507,25 +507,54 @@ const SUPABASE_ANON_KEY = 'VOTRE_CLE_ANON_PUBLIQUE';            // ← remplacer
 const SB_HEADERS = {
   'apikey':        SUPABASE_ANON_KEY,
   'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-  'Content-Type':  'application/json',
+  // Content-Type retiré volontairement : inutile sur GET et cause
+  // "failed to fetch" sur certains mobiles (preflight CORS OPTIONS)
 };
 
 async function sbGet(table, params = '') {
   const url = `${SUPABASE_URL}/rest/v1/${table}${params ? '?' + params : ''}`;
-  const r = await fetch(url, { headers: SB_HEADERS });
-  if (!r.ok) {
-    const txt = await r.text().catch(() => '');
-    throw new Error(`Erreur réseau [${table}] : ${r.status} ${txt.slice(0,80)}`);
+  // Timeout 15s — important sur mobile avec réseau lent
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const r = await fetch(url, {
+      method:  'GET',
+      headers: SB_HEADERS,
+      mode:    'cors',     // explicite pour éviter l'ambiguïté sur mobile
+      signal:  controller.signal,
+    });
+    if (!r.ok) {
+      const txt = await r.text().catch(() => '');
+      throw new Error(`Erreur serveur [${table}] : ${r.status} — ${txt.slice(0,100)}`);
+    }
+    return await r.json();
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      throw new Error('Délai dépassé (15s). Connexion trop lente.');
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  return r.json();
 }
 
 // ── Retry automatique (3 tentatives) ───────────────────────
 async function sbGetRetry(table, params = '', retries = 3) {
   for (let i = 0; i < retries; i++) {
-    try { return await sbGet(table, params); }
-    catch (e) {
-      if (i === retries - 1) throw e;
+    try {
+      return await sbGet(table, params);
+    } catch (e) {
+      const isLast = i === retries - 1;
+      // "Failed to fetch" sur mobile = réseau lent ou CORS preflight
+      // On réessaie avec un délai croissant
+      if (isLast) {
+        // Message d'erreur plus clair pour l'utilisateur
+        if (e.message.includes('fetch') || e.message.includes('network') || e.message.includes('Failed')) {
+          throw new Error('Connexion impossible. Vérifiez votre connexion internet.');
+        }
+        throw e;
+      }
+      // Délai : 1s, 2s, 3s entre les tentatives
       await new Promise(r => setTimeout(r, 1000 * (i + 1)));
     }
   }
@@ -974,10 +1003,10 @@ async function loadAccueil() {
   try {
     const [grades, absences, payments, cls] = await Promise.all([
       loadGradesForStudent(st.currentStudent.id, 1),
-      sbGet('absences', `person_type=eq.student&person_id=eq.${st.currentStudent.id}`),
-      sbGet('pension',  `student_id=eq.${st.currentStudent.id}`),
+      sbGetRetry('absences', `person_type=eq.student&person_id=eq.${st.currentStudent.id}`),
+      sbGetRetry('pension',  `student_id=eq.${st.currentStudent.id}`),
       st.currentStudent.class_id
-        ? sbGet('classes', `id=eq.${st.currentStudent.class_id}`)
+        ? sbGetRetry('classes', `id=eq.${st.currentStudent.class_id}`)
         : Promise.resolve([]),
     ]);
 
